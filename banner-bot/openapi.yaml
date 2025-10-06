@@ -1,0 +1,28 @@
+openapi: 3.1.0
+info: { title: Banner Bot API, version: "1.0" }
+paths:
+  /make_banner:
+    post:
+      summary: Make a banner on an image
+      security: [{ ApiKeyAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file: { type: string, format: binary }
+                preset: { type: integer, minimum: 0, maximum: 5 }
+                text: { type: string }
+                style: { type: string, enum: [auto, left_strip, bottom_ribbon] }
+                brand: { type: string }
+                max_px: { type: integer }
+      responses:
+        "200": { description: OK }
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
