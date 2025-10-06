@@ -168,7 +168,26 @@ def index():
       </form>
       <p>GET <code>/presets</code> • GET <code>/healthz</code></p>
     </body></html>
-    """
+    """<html>
+  <head><title>Photo Banner Bot</title></head>
+  <body>
+    <h1>Photo Banner Bot</h1>
+    <form ...>
+      ...
+    </form>
+         <hr style="margin:24px 0" />
+  <h3>Example banner</h3>
+  <p>This is a sample banner served from <code>/static/example-banner.png</code>.</p>
+  <a href="/static/example-banner.png" target="_blank" style="display:inline-block;margin-bottom:12px;">
+    Click to open full size
+  </a>
+  <div style="max-width:900px;border:1px solid #ddd;padding:8px;border-radius:8px;">
+    <img src="/static/example-banner.png" alt="Example banner"
+         style="max-width:100%;height:auto;display:block;">
+  </div>
+  </body>
+</html>
+"""
     return HTMLResponse(html)
 
 @app.get("/healthz")
