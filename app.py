@@ -277,3 +277,4 @@ def debug_static():
         "cwd": os.getcwd(),
         "static_exists": os.path.isdir(p),
         "files_in_static": os.listdir(p) if os.path.isdir(p) else [],
+    }
