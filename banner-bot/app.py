@@ -3,9 +3,9 @@ from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image, ImageDraw, ImageFont
 import io, os, uuid
-
+from fastapi.staticfiles import StaticFiles
 app = FastAPI(title="Photo Banner Bot")
-
+app.mount("/static", StaticFiles(directory="static"), name="static")
 # --- Settings ---
 OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "/tmp/outputs")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
