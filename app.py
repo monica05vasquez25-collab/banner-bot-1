@@ -240,7 +240,29 @@ async def make_banner(
     out.convert("RGB").save(out_path, quality=95)
 
     return {"id": out_id, "url": f"/outputs/{out_id}", "width": out.width, "height": out.height}
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+import os
 
+# --- STATIC SAMPLE BANNER ROUTE ---
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+os.makedirs(STATIC_DIR, exist_ok=True)
+
+# Serve files from /static
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+@app.get("/example-banner.jpg")
+def example_banner():
+    """Serves a sample banner image for demonstration."""
+    sample_path = os.path.join(STATIC_DIR, "example-banner.jpg")
+    if not os.path.exists(sample_path):
+        # Create a placeholder image if none exists
+        from PIL import Image, ImageDraw
+        img = Image.new("RGB", (1600, 900), color=(220, 220, 220))
+        draw = ImageDraw.Draw(img)
+        draw.text((100, 400), "MLS Banner Example\n(1/0 Buy Down @ 3.99%)", fill=(0, 0, 0))
+        img.save(sample_path)
+    return FileResponse(sample_path, media_type="image/jpeg")
 @app.get("/outputs/{file_id}")
 async def get_output(file_id: str):
     path = os.path.join(OUTPUT_DIR, file_id)
