@@ -144,17 +144,19 @@ PRESETS = {
 def index():
     # Tiny UI for manual uploads / quick tests with Invite Code
     code_input = """
-      <div>Invite code (ask your coach):
-        <input type='password' name='invite' placeholder='Required if set'>
-      </div>""" if INVITE_CODE else ""
+    <div>Invite code (ask your coach):
+      <input type='password' name='invite' placeholder='Required if set'>
+    </div>""" if INVITE_CODE else ""
+
     html = f"""
-    <html><body style='font-family: system-ui; padding: 24px;'>
+    <html>
+    <body style="font-family: system-ui; padding: 24px;">
       <h2>Photo Banner Bot</h2>
-      <form action='/make_banner' method='post' enctype='multipart/form-data'>
+      <form action="/make_banner" method="post" enctype="multipart/form-data">
         <div><input type='file' name='file' required></div>
-        <div>Preset (1-5): <input type='number' name='preset' value='1' min='0' max='5'></div>
+        <div>Preset (1–5): <input type='number' name='preset' value='1' min='0' max='5'></div>
         <div>Custom text (overrides preset): <input type='text' name='text' style='width:420px;' placeholder='e.g., 1/0 BUY DOWN STARTING @ 3.99%'></div>
-        <div>Style: 
+        <div>Style:
           <select name='style'>
             <option value='auto' selected>auto</option>
             <option value='left_strip'>left_strip</option>
@@ -166,28 +168,22 @@ def index():
         {code_input}
         <button type='submit'>Make banner</button>
       </form>
+
+      <hr style="margin:24px 0" />
+      <h3>Example banner</h3>
+      <p>This is a sample banner served from <code>/static/example-banner.png</code>.</p>
+      <a href="/static/example-banner.png" target="_blank" style="display:inline-block;margin-bottom:12px;">
+        Click to open full size
+      </a>
+      <div style="max-width:900px;border:1px solid #ddd;padding:8px;border-radius:8px;">
+        <img src="/static/example-banner.png" alt="Example banner"
+             style="max-width:100%;height:auto;display:block;">
+      </div>
+
       <p>GET <code>/presets</code> • GET <code>/healthz</code></p>
-    </body></html>
-    """<html>
-  <head><title>Photo Banner Bot</title></head>
-  <body>
-    <h1>Photo Banner Bot</h1>
-    <form ...>
-      ...
-    </form>
-         <hr style="margin:24px 0" />
-  <h3>Example banner</h3>
-  <p>This is a sample banner served from <code>/static/example-banner.png</code>.</p>
-  <a href="/static/example-banner.png" target="_blank" style="display:inline-block;margin-bottom:12px;">
-    Click to open full size
-  </a>
-  <div style="max-width:900px;border:1px solid #ddd;padding:8px;border-radius:8px;">
-    <img src="/static/example-banner.png" alt="Example banner"
-         style="max-width:100%;height:auto;display:block;">
-  </div>
-  </body>
-</html>
-"""
+    </body>
+    </html>
+    """
     return HTMLResponse(html)
 
 @app.get("/healthz")
