@@ -269,3 +269,11 @@ async def get_output(file_id: str):
     if not os.path.exists(path):
         return JSONResponse({"error": "Not found"}, status_code=404)
     return FileResponse(path)
+@app.get("/debug/static")
+def debug_static():
+    import os
+    p = "static"
+    return {
+        "cwd": os.getcwd(),
+        "static_exists": os.path.isdir(p),
+        "files_in_static": os.listdir(p) if os.path.isdir(p) else [],
