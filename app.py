@@ -252,6 +252,7 @@ def index():
     return HTMLResponse(content=html)
 
 @app.post("/generate")
+
 @app.post("/generate")
 async def generate(
     photo: UploadFile = File(...),
@@ -266,6 +267,7 @@ async def generate(
     badge_text: str = Form(""),
     badge_corner: str = Form("top-right"),
 ):
+
     try:
         from io import BytesIO
         import re
