@@ -27,13 +27,30 @@ app.add_middleware(
 
 # ----- Helpers -----
 def load_font(preferred_size: int) -> ImageFont.FreeTypeFont:
-    for p in FONT_PATHS:
-        if os.path.exists(p):
-            try:
-                return ImageFont.truetype(p, preferred_size)
-            except Exception:
-                continue
+    """Loads Greycliff if available, else falls back to a system font."""
+    font_dir = os.path.join(os.path.dirname(__file__), "fonts")
+
+    # Path to your Greycliff Bold font
+    greycliff_path = os.path.join(font_dir, "GreycliffCF-Bold.otf")
+
+    # Try Greycliff first
+    if os.path.exists(greycliff_path):
+        try:
+            return ImageFont.truetype(greycliff_path, preferred_size)
+        except Exception as e:
+            print("Error loading Greycliff:", e)
+
+    # Fallback options (system fonts)
+    for candidate in [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+    ]:
+        if os.path.exists(candidate):
+            return ImageFont.truetype(candidate, preferred_size)
+
+    # Last resort fallback
     return ImageFont.load_default()
+
 
 def fit_text_to_box(draw: ImageDraw.ImageDraw, text: str, font_path_size: int, box_w: int, box_h: int, line_spacing: float = 1.0):
     size = font_path_size
