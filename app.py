@@ -339,7 +339,8 @@ async def generate(
         result_rgb = result.convert("RGB")
         result_rgb.save(out_path, "JPEG", quality=92, optimize=True)
 
-        return FileResponse(out_path, media_type="image/jpeg", filename=o
+        return FileResponse(out_path, media_type="image/jpeg", filename=out_name)
+
 
 
 
