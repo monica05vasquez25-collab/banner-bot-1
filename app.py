@@ -4,8 +4,23 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image, ImageDraw, ImageFont
 import io, os, uuid, textwrap
+from fastapi import FastAPI, UploadFile, File, Form
+from fastapi.responses import FileResponse, JSONResponse
+from PIL import Image, ImageDraw, ImageFont, ImageColor
+import io, os, uuid
+
+# --- eXp brand color presets ---
+# Alpha 180 ≈ nice translucent overlay
+EXP_PRESETS = {
+    "exp-blue":   {"banner": (25, 70, 157, 180),  "text": (255, 255, 255, 255)},  # #19469D
+    "deep-navy":  {"banner": (0, 2, 26, 180),     "text": (255, 255, 255, 255)},  # #00021A
+    "gold":       {"banner": (249, 168, 26, 180), "text": (0, 0, 0, 255)},        # #F9A81A
+    "orange":     {"banner": (245, 130, 31, 180), "text": (0, 0, 0, 255)},        # #F5821F
+}
 
 app = FastAPI(title="Photo Banner Bot")
+
+
 
 # ----- Config -----
 OUTPUT_DIR = "outputs"
@@ -197,6 +212,33 @@ def index():
           </div>
         </div>
       </details>
+<!-- eXp Color Presets -->
+<hr>
+<label for="color_preset"><b>Color Preset</b></label>
+<select id="color_preset" name="color_preset">
+  <option value="">— Custom (Use RGBA below) —</option>
+  <option value="exp-blue">eXp Blue</option>
+  <option value="deep-navy">Deep Navy</option>
+  <option value="gold">Gold</option>
+  <option value="orange">Orange</option>
+</select>
+<small>Pick an eXp brand color preset or leave blank to use custom RGBA values.</small>
+
+<!-- Capsule Badge -->
+<hr>
+<label><input type="checkbox" name="enable_badge"> Add Capsule Badge</label>
+
+<div style="margin:6px 0 12px 20px;">
+  <label for="badge_text">Badge Text</label>
+  <input id="badge_text" name="badge_text" placeholder="PRICE DROP">
+
+  <label for="badge_corner" style="margin-left:8px;">Badge Position</label>
+  <select id="badge_corner" name="badge_corner">
+    <option value="top-right">Top Right</option>
+    <option value="top-left">Top Left</option>
+  </select>
+  <small>Capsule auto-sizes to fit text.</small>
+</div>
 
       <div class="actions">
         <button type="submit">Generate Banner</button>
@@ -210,6 +252,7 @@ def index():
     return HTMLResponse(content=html)
 
 @app.post("/generate")
+@app.post("/generate")
 async def generate(
     photo: UploadFile = File(...),
     text: str = Form(""),
@@ -217,38 +260,86 @@ async def generate(
     opacity: str = Form("180"),
     bg_rgba: str = Form("0,0,0,180"),
     text_rgba: str = Form("255,255,255,255"),
+    # new fields
+    color_preset: str = Form(""),
+    enable_badge: str = Form("off"),
+    badge_text: str = Form(""),
+    badge_corner: str = Form("top-right"),
 ):
     try:
-        raw = await photo.read()
-        img = Image.open(io.BytesIO(raw)).convert("RGBA")
+        from io import BytesIO
+        import re
 
-        txt = sanitize_text(text) or "PRICE DROP"
-        try:
-            width_ratio = max(0.10, min(0.40, float(width_pct)/100.0))
-        except:
-            width_ratio = 0.22
+        # Load image
+        raw = await photo.read()
+        img = Image.open(BytesIO(raw)).convert("RGBA")
+
+        # --- parse form fields ---
+        banner_pct = float(width_pct or "22")
+        alpha = int(opacity or "180")
 
         def parse_rgba(s, default):
             try:
                 parts = [int(x.strip()) for x in s.split(",")]
                 if len(parts) == 4:
                     return tuple(parts)
-            except:
+            except Exception:
                 pass
             return default
 
-        bg = parse_rgba(bg_rgba, (0,0,0,int(opacity or "180")))
-        fg = parse_rgba(text_rgba, (255,255,255,255))
+        banner_rgba = parse_rgba(bg_rgba, (0, 0, 0, alpha))
+        if banner_rgba[3] != alpha:
+            banner_rgba = (banner_rgba[0], banner_rgba[1], banner_rgba[2], alpha)
+        text_color = parse_rgba(text_rgba, (255, 255, 255, 255))
 
-        out = add_left_banner(img, txt, width_ratio=width_ratio, bg_rgba=bg, text_fill=fg)
+        # --- eXp preset override ---
+        preset = color_preset.strip()
+        if preset in EXP_PRESETS:
+            banner_rgba = EXP_PRESETS[preset]["banner"]
+            text_color = EXP_PRESETS[preset]["text"]
 
-        file_id = str(uuid.uuid4())[:8]
-        base, ext = os.path.splitext(photo.filename or "image.jpg")
-        out_name = f"{base}_{file_id}.jpg"
+        # --- draw left banner with autofit ---
+        message = text.strip() or "PRICE DROP"
+        result = draw_banner_with_autofit(
+            img=img,
+            banner_pct=banner_pct,
+            banner_rgba=banner_rgba,
+            text_rgba=text_color,
+            message=message,
+        )
+
+        # --- capsule badge (optional) ---
+        if enable_badge == "on" and badge_text.strip():
+            badge_alpha = min(230, banner_rgba[3] + 40)
+            badge_fill = (banner_rgba[0], banner_rgba[1], banner_rgba[2], badge_alpha)
+            result = draw_capsule_badge(
+                base=result,
+                text=badge_text.strip(),
+                badge_rgba=badge_fill,
+                text_rgba=text_color,
+                corner=badge_corner or "top-right",
+            )
+
+        # --- save final image ---
+        OUTPUT_DIR = "outputs"
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+        def _slug(s):
+            s = s.lower().strip()
+            s = re.sub(r"[^a-z0-9]+", "-", s)
+            return re.sub(r"-+", "-", s).strip("-") or "banner"
+
+        base_name = os.path.splitext(photo.filename or "photo")[0]
+        label_src = badge_text if (enable_badge == "on" and badge_text) else message
+        out_name = f"banner-{_slug(label_src)[:30]}-{_slug(base_name)}.jpg"
         out_path = os.path.join(OUTPUT_DIR, out_name)
-        out.save(out_path, quality=95)
 
-        return FileResponse(out_path, media_type="image/jpeg", filename=out_name)
+        result_rgb = result.convert("RGB")
+        result_rgb.save(out_path, "JPEG", quality=92, optimize=True)
+
+        return FileResponse(out_path, media_type="image/jpeg", filename=o
+
+
 
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
