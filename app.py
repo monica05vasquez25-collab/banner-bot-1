@@ -1,295 +1,242 @@
-from fastapi import FastAPI, UploadFile, File, Form, Header
-from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
+from fastapi import FastAPI, UploadFile, File, Form
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image, ImageDraw, ImageFont
-import io, os, uuid
-from fastapi.staticfiles import StaticFiles
-app = FastAPI(title="Photo Banner Bot")
-app.mount("/static", StaticFiles(directory="static"), name="static")
-# --- Settings ---
-OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "/tmp/outputs")
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-MAX_W = int(os.environ.get("MAX_LONG_EDGE", 2048))
-API_KEY = os.environ.get("API_KEY", "")           # optional: if set, required for API calls
-INVITE_CODE = os.environ.get("INVITE_CODE", "")     # optional: if set, required in the HTML form
+import io, os, uuid, textwrap
 
-# Allow Canva/localhost etc.
+app = FastAPI(title="Photo Banner Bot")
+
+# ----- Config -----
+OUTPUT_DIR = "outputs"
+FONT_PATHS = [
+    "fonts/DejaVuSans-Bold.ttf",   # include this in your repo
+    "fonts/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+]
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# Static (optional for downloads)
+app.mount("/outputs", StaticFiles(directory=OUTPUT_DIR), name="outputs")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"]
+    allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
 )
 
-# --- Helpers ---
-
-def load_font(size: int) -> ImageFont.FreeTypeFont:
-    candidates = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-    ]
-    for path in candidates:
-        if os.path.exists(path):
-            return ImageFont.truetype(path, size)
+# ----- Helpers -----
+def load_font(preferred_size: int) -> ImageFont.FreeTypeFont:
+    for p in FONT_PATHS:
+        if os.path.exists(p):
+            try:
+                return ImageFont.truetype(p, preferred_size)
+            except Exception:
+                continue
     return ImageFont.load_default()
 
+def fit_text_to_box(draw: ImageDraw.ImageDraw, text: str, font_path_size: int, box_w: int, box_h: int, line_spacing: float = 1.0):
+    size = font_path_size
+    while size >= 10:
+        font = load_font(size)
+        max_chars = max(1, int(box_w / (size * 0.55)))
+        wrapped = []
+        for raw in text.split("\n"):
+            wrapped.extend(textwrap.wrap(raw.strip(), width=max_chars) or [""])
+        total_h = 0
+        for line in wrapped:
+            w, h = draw.textbbox((0, 0), line, font=font)[2:]
+            total_h += h
+            total_h += int(h * (line_spacing - 1))
+        if total_h <= box_h:
+            return font, wrapped
+        size -= 2
+    return load_font(10), textwrap.wrap(text, width=max(1, int(box_w / 6))) or [""]
 
-def resize_long_edge(img: Image.Image, long_edge: int) -> Image.Image:
+def add_left_banner(img: Image.Image, text: str, width_ratio: float = 0.22,
+                    bg_rgba=(0,0,0,180), text_fill=(255,255,255,255), padding_ratio=0.06):
     w, h = img.size
-    if max(w, h) <= long_edge:
-        return img
-    if w >= h:
-        nh = int(h * (long_edge / w))
-        return img.resize((long_edge, nh), Image.LANCZOS)
-    else:
-        nw = int(w * (long_edge / h))
-        return img.resize((nw, long_edge), Image.LANCZOS)
+    banner_w = max(40, int(w * width_ratio))
+    banner_x0, banner_y0 = 0, 0
+    banner_x1, banner_y1 = banner_w, h
 
+    overlay = Image.new("RGBA", img.size, (0,0,0,0))
+    odraw = ImageDraw.Draw(overlay)
+    odraw.rectangle([banner_x0, banner_y0, banner_x1, banner_y1], fill=bg_rgba)
+    img = Image.alpha_composite(img.convert("RGBA"), overlay)
 
-def ensure_rgba(img: Image.Image) -> Image.Image:
-    return img.convert("RGBA") if img.mode != "RGBA" else img
+    pad = int(banner_w * padding_ratio)
+    text_x0 = banner_x0 + pad
+    text_y0 = banner_y0 + pad
+    text_w = banner_w - (2 * pad)
+    text_h = h - (2 * pad)
 
+    draw = ImageDraw.Draw(img)
+    font, lines = fit_text_to_box(draw, text, font_path_size=int(banner_w * 0.28), box_w=text_w, box_h=text_h, line_spacing=1.05)
 
-def text_wrap(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont, max_w: int):
-    words = text.split()
-    lines, line = [], ""
-    for w in words:
-        trial = (line + " " + w).strip()
-        if draw.textlength(trial, font=font) <= max_w:
-            line = trial
-        else:
-            if line:
-                lines.append(line)
-            line = w
-    if line:
-        lines.append(line)
-    return lines
-
-
-def add_left_strip(img: Image.Image, text: str, *, strip_rel_width=0.32, 
-                    padding=24, font_size_rel=0.05, 
-                    strip_color=(0, 0, 0, 180), text_color=(255, 255, 255, 255),
-                    corner_radius_rel=0.02):
-    """Classic vertical rectangle on the LEFT; auto-wrap text; rounded inner corner."""
-    img = ensure_rgba(img)
-    W, H = img.size
-    strip_w = int(W * strip_rel_width)
-    radius = int(min(W, H) * corner_radius_rel)
-
-    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
-    o = ImageDraw.Draw(overlay)
-    rect = (0, 0, strip_w, H)
-    o.rounded_rectangle(rect, radius=radius, fill=strip_color)
-
-    font = load_font(max(14, int(H * font_size_rel)))
-    draw = ImageDraw.Draw(overlay)
-    max_text_w = strip_w - 2 * padding
-    lines = text_wrap(draw, text, font, max_text_w)
-
-    line_h = font.getbbox("Ay")[3] - font.getbbox("Ay")[1]
-    total_h = len(lines) * line_h + (len(lines) - 1) * int(line_h * 0.25)
-    y = (H - total_h) // 2
+    line_heights = []
+    total_h = 0
     for line in lines:
-        w = draw.textlength(line, font=font)
-        draw.text((padding + (max_text_w - w) // 2, y), line, font=font, fill=text_color)
-        y += int(line_h * 1.25)
+        bbox = draw.textbbox((0, 0), line, font=font)
+        lh = bbox[3] - bbox[1]
+        line_heights.append(lh)
+        total_h += lh
+    total_h += int((len(lines) - 1) * (line_heights[0] * 0.05))
 
-    return Image.alpha_composite(img, overlay)
+    current_y = text_y0 + max(0, (text_h - total_h) // 2)
+    for i, line in enumerate(lines):
+        lbbox = draw.textbbox((0, 0), line, font=font)
+        lw = lbbox[2] - lbbox[0]
+        line_x = text_x0 + max(0, (text_w - lw) // 2)
+        draw.text((line_x, current_y), line, font=font, fill=text_fill)
+        current_y += line_heights[i] + int(line_heights[i] * 0.05)
 
+    return img.convert("RGB")
 
-def add_bottom_ribbon(img: Image.Image, text: str, *, ribbon_rel_height=0.16, padding=24,
-                      font_size_rel=0.06, ribbon_color=(0,0,0,170), text_color=(255,255,255,255)):
-    img = ensure_rgba(img)
-    W, H = img.size
-    ribbon_h = int(H * ribbon_rel_height)
-    y0 = H - ribbon_h
+def sanitize_text(s: str) -> str:
+    return " ".join((s or "").strip().split())
 
-    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
-    o = ImageDraw.Draw(overlay)
-    o.rectangle((0, y0, W, H), fill=ribbon_color)
-
-    font = load_font(max(14, int(H * font_size_rel)))
-    draw = ImageDraw.Draw(overlay)
-    max_text_w = W - 2 * padding
-    lines = text_wrap(draw, text, font, max_text_w)
-
-    line_h = font.getbbox("Ay")[3] - font.getbbox("Ay")[1]
-    total_h = len(lines) * line_h + (len(lines) - 1) * int(line_h * 0.25)
-    y = y0 + (ribbon_h - total_h)//2
-    for line in lines:
-        w = draw.textlength(line, font=font)
-        draw.text(((W - w)//2, y), line, font=font, fill=text_color)
-        y += int(line_h * 1.25)
-
-    return Image.alpha_composite(img, overlay)
-
-# --- Brands & Presets ---
-BRANDS = {
-    "coventry": {"strip_color": (7, 42, 80, 200), "text_color": (255,255,255,255),
-                 "label": "COVENTRY CLOSE-OUT SPECIAL", "style": "left_strip"},
-    "davidson": {"strip_color": (0, 0, 0, 180), "text_color": (255,255,0,255),
-                 "label": "DAVIDSON INCENTIVE", "style": "bottom_ribbon"},
-}
-
-PRESETS = {
-    1: {"label": "1/0 BUY DOWN STARTING @ 3.99%", "style": "left_strip"},
-    2: {"label": "PRICE IMPROVEMENT", "style": "bottom_ribbon"},
-    3: {"label": "BUILDER CLOSE-OUT SPECIAL", "style": "left_strip"},
-    4: {"label": "VA & FIRST‑TIME BUYER FRIENDLY", "style": "bottom_ribbon"},
-    5: {"label": "OPEN HOUSE THIS WEEKEND", "style": "left_strip"},
-}
-
-@app.get("/")
+# ----- Routes -----
+@app.get("/", response_class=HTMLResponse)
 def index():
-    # Tiny UI for manual uploads / quick tests with Invite Code
-    code_input = """
-    <div>Invite code (ask your coach):
-      <input type='password' name='invite' placeholder='Required if set'>
-    </div>""" if INVITE_CODE else ""
+    html = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Photo Banner Bot</title>
+<style>
+  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 24px; }
+  .card { max-width: 920px; border: 1px solid #e5e7eb; border-radius: 16px; padding: 24px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+  h1 { margin: 0 0 12px 0; }
+  label { display:block; margin-top: 12px; font-weight: 600; }
+  input[type="file"], input[type="text"], select { width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 8px; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .actions { margin-top: 16px; display:flex; gap:8px; flex-wrap: wrap;}
+  button { padding: 10px 14px; border: none; border-radius: 10px; cursor:pointer; background:black; color:white; font-weight:600; }
+  .note { color:#6b7280; font-size: 13px; }
+  .preview { margin-top: 16px; }
+  details { margin-top: 12px; }
+</style>
+<script>
+  function setPreset() {
+    const preset = document.getElementById('preset').value;
+    if (!preset) return;
+    document.getElementById('text').value = preset;
+  }
+</script>
+</head>
+<body>
+  <div class="card">
+    <h1>Photo Banner Bot</h1>
+    <p class="note">Upload a listing photo, pick a preset or type custom copy, and get a left-side banner that fits perfectly.</p>
 
-    html = f"""
-    <html>
-    <body style="font-family: system-ui; padding: 24px;">
-      <h2>Photo Banner Bot</h2>
-      <form action="/make_banner" method="post" enctype="multipart/form-data">
-        <div><input type='file' name='file' required></div>
-        <div>Preset (1–5): <input type='number' name='preset' value='1' min='0' max='5'></div>
-        <div>Custom text (overrides preset): <input type='text' name='text' style='width:420px;' placeholder='e.g., 1/0 BUY DOWN STARTING @ 3.99%'></div>
-        <div>Style:
-          <select name='style'>
-            <option value='auto' selected>auto</option>
-            <option value='left_strip'>left_strip</option>
-            <option value='bottom_ribbon'>bottom_ribbon</option>
+    <form action="/generate" method="post" enctype="multipart/form-data" target="_blank">
+      <label>Photo (JPG/PNG)</label>
+      <input type="file" name="photo" accept="image/*" required />
+
+      <div class="row">
+        <div>
+          <label>Preset (one-click)</label>
+          <select id="preset" onchange="setPreset()">
+            <option value="">— Select a preset —</option>
+            <option>PRICE DROP</option>
+            <option>1/0 BUY DOWN STARTING @ 3.99%</option>
+            <option>OPEN HOUSE THIS SAT 11–2</option>
+            <option>BUILDER INCENTIVE: $15,000</option>
+            <option>NOW FHA/VA ELIGIBLE</option>
           </select>
         </div>
-        <div>Brand (optional): <input name='brand' placeholder='coventry, davidson'></div>
-        <div>Long-edge max px (default 2048): <input type='number' name='max_px' value='2048'></div>
-        {code_input}
-        <button type='submit'>Make banner</button>
-      </form>
-
-      <hr style="margin:24px 0" />
-      <h3>Example banner</h3>
-      <p>This is a sample banner served from <code>/static/example-banner.png</code>.</p>
-      <a href="/static/example-banner.png" target="_blank" style="display:inline-block;margin-bottom:12px;">
-        Click to open full size
-      </a>
-      <div style="max-width:900px;border:1px solid #ddd;padding:8px;border-radius:8px;">
-        <img src="/static/example-banner.png" alt="Example banner"
-             style="max-width:100%;height:auto;display:block;">
+        <div>
+          <label>Custom Text (overrides empty)</label>
+          <input type="text" id="text" name="text" placeholder="Type your banner text…" />
+        </div>
       </div>
 
-      <p>GET <code>/presets</code> • GET <code>/healthz</code></p>
-    </body>
-    </html>
-    """
-    return HTMLResponse(html)
+      <div class="row">
+        <div>
+          <label>Banner Width % (left strip)</label>
+          <input type="text" name="width_pct" value="22" />
+          <span class="note">Typical: 15–30. Wider = bigger strip.</span>
+        </div>
+        <div>
+          <label>Opacity (0–255)</label>
+          <input type="text" name="opacity" value="180" />
+          <span class="note">180 is a nice translucent black.</span>
+        </div>
+      </div>
 
+      <details>
+        <summary>Advanced (optional)</summary>
+        <div class="row">
+          <div>
+            <label>Banner Color (RGBA, comma-sep)</label>
+            <input type="text" name="bg_rgba" value="0,0,0,180" />
+          </div>
+          <div>
+            <label>Text Color (RGBA, comma-sep)</label>
+            <input type="text" name="text_rgba" value="255,255,255,255" />
+          </div>
+        </div>
+      </details>
+
+      <div class="actions">
+        <button type="submit">Generate Banner</button>
+      </div>
+    </form>
+    <p class="note preview">Result opens in a new tab and is saved under <code>/outputs</code>.</p>
+  </div>
+</body>
+</html>
+    """
+    return HTMLResponse(content=html)
+
+@app.post("/generate")
+async def generate(
+    photo: UploadFile = File(...),
+    text: str = Form(""),
+    width_pct: str = Form("22"),
+    opacity: str = Form("180"),
+    bg_rgba: str = Form("0,0,0,180"),
+    text_rgba: str = Form("255,255,255,255"),
+):
+    try:
+        raw = await photo.read()
+        img = Image.open(io.BytesIO(raw)).convert("RGBA")
+
+        txt = sanitize_text(text) or "PRICE DROP"
+        try:
+            width_ratio = max(0.10, min(0.40, float(width_pct)/100.0))
+        except:
+            width_ratio = 0.22
+
+        def parse_rgba(s, default):
+            try:
+                parts = [int(x.strip()) for x in s.split(",")]
+                if len(parts) == 4:
+                    return tuple(parts)
+            except:
+                pass
+            return default
+
+        bg = parse_rgba(bg_rgba, (0,0,0,int(opacity or "180")))
+        fg = parse_rgba(text_rgba, (255,255,255,255))
+
+        out = add_left_banner(img, txt, width_ratio=width_ratio, bg_rgba=bg, text_fill=fg)
+
+        file_id = str(uuid.uuid4())[:8]
+        base, ext = os.path.splitext(photo.filename or "image.jpg")
+        out_name = f"{base}_{file_id}.jpg"
+        out_path = os.path.join(OUTPUT_DIR, out_name)
+        out.save(out_path, quality=95)
+
+        return FileResponse(out_path, media_type="image/jpeg", filename=out_name)
+
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+# Health check for Render
 @app.get("/healthz")
 def healthz():
     return {"ok": True}
-
-@app.get("/presets")
-def presets():
-    return {"brands": list(BRANDS.keys()), "presets": PRESETS}
-
-@app.post("/make_banner")
-async def make_banner(
-    file: UploadFile = File(...),
-    preset: int = Form(1),
-    text: str = Form(""),
-    style: str = Form("auto"),
-    brand: str = Form(""),
-    max_px: int = Form(None),
-    x_api_key: str = Header(None),
-    invite: str = Form("")
-):
-    # Gatekeeping: API key for programmatic calls; invite code for form usage
-    if API_KEY and x_api_key != API_KEY:
-        return JSONResponse({"error": "Unauthorized"}, status_code=401)
-    if INVITE_CODE and invite != INVITE_CODE and not x_api_key:
-        return JSONResponse({"error": "Invite required"}, status_code=401)
-
-    content = await file.read()
-    try:
-        img = Image.open(io.BytesIO(content)).convert("RGB")
-    except Exception:
-        return JSONResponse({"error": "Unsupported image"}, status_code=400)
-
-    img = resize_long_edge(img, max_px or MAX_W)
-
-    # Resolve text/style from preset or brand
-    chosen = PRESETS.get(preset)
-    if text.strip():
-        label = text.strip()
-    else:
-        label = (chosen["label"] if chosen else "")
-
-    if style == "auto":
-        style = (chosen["style"] if chosen else "left_strip")
-
-    # Brand overrides
-    strip_color = None
-    text_color = None
-    if brand and brand.lower() in BRANDS:
-        b = BRANDS[brand.lower()]
-        label = label or b.get("label", label)
-        style = b.get("style", style)
-        strip_color = b.get("strip_color")
-        text_color = b.get("text_color")
-
-    if style == "left_strip":
-        out = add_left_strip(img, label,
-                             strip_color=strip_color or (0,0,0,180),
-                             text_color=text_color or (255,255,255,255))
-    elif style == "bottom_ribbon":
-        out = add_bottom_ribbon(img, label,
-                                ribbon_color=strip_color or (0,0,0,170),
-                                text_color=text_color or (255,255,255,255))
-    else:
-        return JSONResponse({"error": "Unknown style"}, status_code=400)
-
-    out_id = str(uuid.uuid4()) + ".png"
-    out_path = os.path.join(OUTPUT_DIR, out_id)
-    out.convert("RGB").save(out_path, quality=95)
-
-    return {"id": out_id, "url": f"/outputs/{out_id}", "width": out.width, "height": out.height}
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-import os
-
-# --- STATIC SAMPLE BANNER ROUTE ---
-STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
-os.makedirs(STATIC_DIR, exist_ok=True)
-
-# Serve files from /static
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-
-@app.get("/example-banner.jpg")
-def example_banner():
-    """Serves a sample banner image for demonstration."""
-    sample_path = os.path.join(STATIC_DIR, "example-banner.jpg")
-    if not os.path.exists(sample_path):
-        # Create a placeholder image if none exists
-        from PIL import Image, ImageDraw
-        img = Image.new("RGB", (1600, 900), color=(220, 220, 220))
-        draw = ImageDraw.Draw(img)
-        draw.text((100, 400), "MLS Banner Example\n(1/0 Buy Down @ 3.99%)", fill=(0, 0, 0))
-        img.save(sample_path)
-    return FileResponse(sample_path, media_type="image/jpeg")
-@app.get("/outputs/{file_id}")
-async def get_output(file_id: str):
-    path = os.path.join(OUTPUT_DIR, file_id)
-    if not os.path.exists(path):
-        return JSONResponse({"error": "Not found"}, status_code=404)
-    return FileResponse(path)
-@app.get("/debug/static")
-def debug_static():
-    import os
-    p = "static"
-    return {
-        "cwd": os.getcwd(),
-        "static_exists": os.path.isdir(p),
-        "files_in_static": os.listdir(p) if os.path.isdir(p) else [],
-    }
